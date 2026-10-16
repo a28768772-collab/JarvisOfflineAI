@@ -1,4 +1,4 @@
-name: Build JARVIS Offline APK
+name: Build JARVIS Wake Background APK
 
 on:
   workflow_dispatch:
@@ -52,7 +52,7 @@ jobs:
               }
           }
 
-          rootProject.name = "JARVISOffline"
+          rootProject.name = "JARVISWake"
           include(":app")
           EOF
 
@@ -80,8 +80,8 @@ jobs:
                   applicationId 'com.jarvis.offline'
                   minSdk 26
                   targetSdk 35
-                  versionCode 1
-                  versionName '1.0'
+                  versionCode 2
+                  versionName '2.0'
               }
           }
           EOF
@@ -90,26 +90,29 @@ jobs:
           <resources>
               <style name="AppTheme"
                   parent="@android:style/Theme.Material.NoActionBar">
-
                   <item name="android:fontFamily">sans</item>
                   <item name="android:windowLightStatusBar">false</item>
                   <item name="android:statusBarColor">#000000</item>
                   <item name="android:navigationBarColor">#000000</item>
                   <item name="android:windowBackground">#000000</item>
-
               </style>
           </resources>
           EOF
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
-
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
               <uses-permission android:name="android.permission.RECORD_AUDIO" />
-              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.speech.RecognitionService" />
+                  </intent>
+              </queries>
 
               <application
                   android:allowBackup="true"
@@ -120,16 +123,20 @@ jobs:
                   <activity
                       android:name=".MainActivity"
                       android:exported="true">
-
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
-
                   </activity>
 
-              </application>
+                  <service
+                      android:name=".JarvisService"
+                      android:enabled="true"
+                      android:exported="false"
+                      android:stopWithTask="false"
+                      android:foregroundServiceType="microphone" />
 
+              </application>
           </manifest>
           EOF
 
@@ -140,50 +147,36 @@ jobs:
           import android.app.Activity;
           import android.content.Intent;
           import android.content.pm.PackageManager;
+          import android.os.Build;
           import android.os.Bundle;
-          import android.speech.RecognitionListener;
-          import android.speech.RecognizerIntent;
-          import android.speech.SpeechRecognizer;
-          import android.speech.tts.TextToSpeech;
-          import android.view.Gravity;
           import android.widget.Button;
           import android.widget.LinearLayout;
           import android.widget.TextView;
-
-          import java.util.ArrayList;
-          import java.util.Locale;
+          import android.view.Gravity;
 
           public class MainActivity extends Activity {
 
+              private static final int REQ_AUDIO = 100;
+              private static final int REQ_NOTIFICATIONS = 101;
+
               private TextView status;
-              private TextView result;
-
-              private TextToSpeech tts;
-              private SpeechRecognizer speechRecognizer;
-
-              private boolean listening = false;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-
                   buildScreen();
-                  setupTTS();
-                  setupSpeech();
 
-                  if (android.os.Build.VERSION.SDK_INT >= 23 &&
+                  if (Build.VERSION.SDK_INT >= 23 &&
                       checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                           != PackageManager.PERMISSION_GRANTED) {
-
                       requestPermissions(
                           new String[]{Manifest.permission.RECORD_AUDIO},
-                          100
+                          REQ_AUDIO
                       );
                   }
               }
 
               private void buildScreen() {
-
                   LinearLayout root = new LinearLayout(this);
                   root.setOrientation(LinearLayout.VERTICAL);
                   root.setGravity(Gravity.CENTER);
@@ -195,14 +188,9 @@ jobs:
                   title.setGravity(Gravity.CENTER);
 
                   status = new TextView(this);
-                  status.setText("\nOFFLINE ASSISTANT\nReady");
-                  status.setTextSize(20);
+                  status.setText("\nJARVIS Ready\n\nTap START once.\nThen say: Hey JARVIS");
+                  status.setTextSize(19);
                   status.setGravity(Gravity.CENTER);
-
-                  result = new TextView(this);
-                  result.setText("\nSay a command...");
-                  result.setTextSize(18);
-                  result.setGravity(Gravity.CENTER);
 
                   Button start = new Button(this);
                   start.setText("START JARVIS");
@@ -210,155 +198,264 @@ jobs:
                   Button stop = new Button(this);
                   stop.setText("STOP");
 
-                  start.setOnClickListener(v -> startListening());
-
-                  stop.setOnClickListener(v -> stopListening());
+                  start.setOnClickListener(v -> startJarvis());
+                  stop.setOnClickListener(v -> stopJarvis());
 
                   root.addView(title);
                   root.addView(status);
-                  root.addView(result);
                   root.addView(start);
                   root.addView(stop);
 
                   setContentView(root);
               }
 
+              private void startJarvis() {
+                  if (Build.VERSION.SDK_INT >= 23 &&
+                      checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                          != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(
+                          new String[]{Manifest.permission.RECORD_AUDIO},
+                          REQ_AUDIO
+                      );
+                      return;
+                  }
+
+                  if (Build.VERSION.SDK_INT >= 33 &&
+                      checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                          != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(
+                          new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                          REQ_NOTIFICATIONS
+                      );
+                  }
+
+                  Intent serviceIntent = new Intent(this, JarvisService.class);
+
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      startForegroundService(serviceIntent);
+                  } else {
+                      startService(serviceIntent);
+                  }
+
+                  status.setText(
+                      "\nJARVIS ACTIVE\n\n" +
+                      "Background wake is ON\n" +
+                      "Say: Hey JARVIS"
+                  );
+              }
+
+              private void stopJarvis() {
+                  stopService(new Intent(this, JarvisService.class));
+                  status.setText("\nJARVIS STOPPED\n\nTap START to run again.");
+              }
+
+              @Override
+              public void onRequestPermissionsResult(
+                      int requestCode,
+                      String[] permissions,
+                      int[] grantResults) {
+                  super.onRequestPermissionsResult(
+                      requestCode, permissions, grantResults
+                  );
+
+                  if (requestCode == REQ_AUDIO &&
+                      grantResults.length > 0 &&
+                      grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                      status.setText(
+                          "\nMicrophone allowed.\n\nTap START JARVIS once."
+                      );
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/jarvis/offline/JarvisService.java <<'EOF'
+          package com.jarvis.offline;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Intent;
+          import android.content.pm.ServiceInfo;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.IBinder;
+          import android.speech.RecognitionListener;
+          import android.speech.RecognizerIntent;
+          import android.speech.SpeechRecognizer;
+          import android.speech.tts.TextToSpeech;
+
+          import java.text.SimpleDateFormat;
+          import java.util.ArrayList;
+          import java.util.Date;
+          import java.util.Locale;
+
+          public class JarvisService extends Service {
+
+              private static final int NOTIFICATION_ID = 9001;
+              private static final String CHANNEL_ID = "jarvis_microphone";
+
+              private SpeechRecognizer recognizer;
+              private TextToSpeech tts;
+              private Handler handler;
+
+              private boolean listening = false;
+              private boolean waitingForCommand = false;
+              private boolean stopping = false;
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+
+                  handler = new Handler(getMainLooper());
+
+                  createNotificationChannel();
+                  startForegroundServiceNotification();
+
+                  setupTTS();
+                  setupRecognizer();
+
+                  handler.postDelayed(() -> startWakeListening(), 700);
+              }
+
+              private void startForegroundServiceNotification() {
+                  Intent openIntent = new Intent(this, MainActivity.class);
+
+                  PendingIntent pendingIntent = PendingIntent.getActivity(
+                      this,
+                      0,
+                      openIntent,
+                      PendingIntent.FLAG_UPDATE_CURRENT |
+                      (Build.VERSION.SDK_INT >= 23
+                          ? PendingIntent.FLAG_IMMUTABLE : 0)
+                  );
+
+                  Notification.Builder builder;
+
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      builder = new Notification.Builder(this, CHANNEL_ID);
+                  } else {
+                      builder = new Notification.Builder(this);
+                  }
+
+                  Notification notification = builder
+                      .setContentTitle("JARVIS is active")
+                      .setContentText("Wake word: Hey JARVIS")
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setContentIntent(pendingIntent)
+                      .setOngoing(true)
+                      .build();
+
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(
+                          NOTIFICATION_ID,
+                          notification,
+                          ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                      );
+                  } else {
+                      startForeground(NOTIFICATION_ID, notification);
+                  }
+              }
+
+              private void createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      NotificationChannel channel =
+                          new NotificationChannel(
+                              CHANNEL_ID,
+                              "JARVIS microphone",
+                              NotificationManager.IMPORTANCE_LOW
+                          );
+
+                      channel.setDescription(
+                          "Keeps JARVIS ready for the wake word."
+                      );
+
+                      NotificationManager manager =
+                          getSystemService(NotificationManager.class);
+
+                      if (manager != null) {
+                          manager.createNotificationChannel(channel);
+                      }
+                  }
+              }
+
               private void setupTTS() {
-
-                  tts = new TextToSpeech(this, value -> {
-
-                      if (value == TextToSpeech.SUCCESS) {
-
-                          int languageResult =
-                              tts.setLanguage(Locale.US);
-
-                          tts.setSpeechRate(0.9f);
+                  tts = new TextToSpeech(this, result -> {
+                      if (result == TextToSpeech.SUCCESS) {
+                          tts.setLanguage(Locale.US);
+                          tts.setSpeechRate(0.90f);
                       }
                   });
               }
 
-              private void setupSpeech() {
-
-                  if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-
-                      status.setText(
-                          "\nJARVIS\nSpeech recognition unavailable."
-                      );
-
+              private void setupRecognizer() {
+                  if (Build.VERSION.SDK_INT >= 31 &&
+                      SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
+                      recognizer =
+                          SpeechRecognizer.createOnDeviceSpeechRecognizer(this);
+                  } else if (SpeechRecognizer.isRecognitionAvailable(this)) {
+                      recognizer =
+                          SpeechRecognizer.createSpeechRecognizer(this);
+                  } else {
+                      recognizer = null;
+                      speak("Speech recognition is not available.");
                       return;
                   }
 
-                  speechRecognizer =
-                      SpeechRecognizer.createSpeechRecognizer(this);
+                  recognizer.setRecognitionListener(new RecognitionListener() {
 
-                  speechRecognizer.setRecognitionListener(
-                      new RecognitionListener() {
+                      @Override
+                      public void onReadyForSpeech(Bundle params) {
+                          listening = true;
+                      }
 
-                          @Override
-                          public void onReadyForSpeech(Bundle params) {
+                      @Override
+                      public void onBeginningOfSpeech() {
+                          listening = true;
+                      }
 
-                              listening = true;
+                      @Override
+                      public void onEndOfSpeech() {
+                          listening = false;
+                      }
 
-                              status.setText(
-                                  "\nJARVIS\nListening..."
+                      @Override
+                      public void onResults(Bundle results) {
+                          listening = false;
+
+                          ArrayList<String> matches =
+                              results.getStringArrayList(
+                                  SpeechRecognizer.RESULTS_RECOGNITION
                               );
-                          }
 
-                          @Override
-                          public void onBeginningOfSpeech() {
-
-                              status.setText(
-                                  "\nJARVIS\nI'm listening..."
-                              );
-                          }
-
-                          @Override
-                          public void onEndOfSpeech() {
-
-                              status.setText(
-                                  "\nJARVIS\nProcessing..."
-                              );
-                          }
-
-                          @Override
-                          public void onResults(Bundle results) {
-
-                              listening = false;
-
-                              ArrayList<String> matches =
-                                  results.getStringArrayList(
-                                      SpeechRecognizer.RESULTS_RECOGNITION
-                                  );
-
-                              if (matches != null &&
-                                  !matches.isEmpty()) {
-
-                                  String command =
-                                      matches.get(0);
-
-                                  result.setText(
-                                      "\nYou said:\n" + command
-                                  );
-
-                                  handleCommand(command);
-                              }
-
-                              status.setText(
-                                  "\nJARVIS\nReady"
-                              );
-                          }
-
-                          @Override
-                          public void onError(int error) {
-
-                              listening = false;
-
-                              status.setText(
-                                  "\nJARVIS\nReady"
-                              );
-                          }
-
-                          @Override
-                          public void onRmsChanged(float rmsdB) {
-                          }
-
-                          @Override
-                          public void onBufferReceived(
-                              byte[] buffer) {
-                          }
-
-                          @Override
-                          public void onPartialResults(
-                              Bundle partialResults) {
-                          }
-
-                          @Override
-                          public void onEvent(
-                              int eventType,
-                              Bundle params) {
+                          if (matches != null && !matches.isEmpty()) {
+                              handleSpeech(matches.get(0));
+                          } else {
+                              restartListeningSoon();
                           }
                       }
-                  );
+
+                      @Override
+                      public void onError(int error) {
+                          listening = false;
+
+                          if (!stopping) {
+                              restartListeningSoon();
+                          }
+                      }
+
+                      @Override public void onRmsChanged(float rmsdB) {}
+                      @Override public void onBufferReceived(byte[] buffer) {}
+                      @Override public void onPartialResults(Bundle partialResults) {}
+                      @Override public void onEvent(int eventType, Bundle params) {}
+                  });
               }
 
-              private void startListening() {
-
-                  if (speechRecognizer == null) {
-                      return;
-                  }
-
-                  if (android.os.Build.VERSION.SDK_INT >= 23 &&
-                      checkSelfPermission(
-                          Manifest.permission.RECORD_AUDIO
-                      ) != PackageManager.PERMISSION_GRANTED) {
-
-                      requestPermissions(
-                          new String[]{
-                              Manifest.permission.RECORD_AUDIO
-                          },
-                          100
-                      );
-
+              private void startWakeListening() {
+                  if (stopping || recognizer == null || listening) {
                       return;
                   }
 
@@ -381,96 +478,129 @@ jobs:
                       false
                   );
 
-                  listening = true;
-
-                  status.setText(
-                      "\nJARVIS\nStarting..."
+                  intent.putExtra(
+                      RecognizerIntent.EXTRA_PREFER_OFFLINE,
+                      true
                   );
 
-                  speechRecognizer.startListening(intent);
+                  try {
+                      recognizer.startListening(intent);
+                      listening = true;
+                  } catch (Exception e) {
+                      listening = false;
+                      restartListeningSoon();
+                  }
               }
 
-              private void stopListening() {
-
-                  if (speechRecognizer != null) {
-                      speechRecognizer.stopListening();
+              private void restartListeningSoon() {
+                  if (!stopping) {
+                      handler.postDelayed(
+                          this::startWakeListening,
+                          waitingForCommand ? 300 : 500
+                      );
                   }
-
-                  listening = false;
-
-                  status.setText(
-                      "\nJARVIS\nStopped"
-                  );
               }
 
-              private void handleCommand(String command) {
+              private void handleSpeech(String raw) {
+                  String text = raw.toLowerCase(Locale.ROOT).trim();
 
-                  String text =
-                      command.toLowerCase(Locale.ROOT);
-
-                  if (text.contains("hello") ||
-                      text.contains("hi") ||
-                      text.contains("jarvis")) {
-
-                      speak(
-                          "Hello. JARVIS is ready."
-                      );
-
-                      status.setText(
-                          "\nJARVIS\nReady"
-                      );
+                  if (text.isEmpty()) {
+                      restartListeningSoon();
+                      return;
                   }
 
-                  else if (text.contains("time")) {
-
-                      String time =
-                          new java.text.SimpleDateFormat(
-                              "hh:mm a",
-                              Locale.getDefault()
-                          ).format(
-                              new java.util.Date()
-                          );
-
-                      speak(
-                          "The time is " + time
-                      );
+                  if (containsStopCommand(text)) {
+                      speak("JARVIS stopping.");
+                      handler.postDelayed(this::stopJarvisService, 900);
+                      return;
                   }
 
-                  else if (text.contains("settings")) {
-
-                      speak(
-                          "Opening settings."
-                      );
-
-                      Intent settings =
-                          new Intent(
-                              android.provider.Settings.ACTION_SETTINGS
-                          );
-
-                      startActivity(settings);
+                  if (!waitingForCommand) {
+                      if (containsWakeWord(text)) {
+                          waitingForCommand = true;
+                          speak("Yes?");
+                          handler.postDelayed(this::startWakeListening, 700);
+                      } else {
+                          restartListeningSoon();
+                      }
+                      return;
                   }
 
-                  else if (text.contains("stop")) {
+                  waitingForCommand = false;
+                  executeCommand(text);
+              }
 
-                      stopListening();
+              private boolean containsWakeWord(String text) {
+                  return text.contains("jarvis") ||
+                         text.contains("जार्विस") ||
+                         text.contains("जर्विस");
+              }
 
-                      speak(
-                          "JARVIS stopped."
+              private boolean containsStopCommand(String text) {
+                  return (text.contains("jarvis") ||
+                          text.contains("जार्विस") ||
+                          text.contains("जर्विस")) &&
+                         (text.contains("stop") ||
+                          text.contains("स्टॉप") ||
+                          text.contains("band") ||
+                          text.contains("बंद") ||
+                          text.contains("shutdown"));
+              }
+
+              private void executeCommand(String text) {
+
+                  if (text.contains("time") ||
+                      text.contains("समय") ||
+                      text.contains("टाइम")) {
+
+                      String time = new SimpleDateFormat(
+                          "hh:mm a",
+                          Locale.getDefault()
+                      ).format(new Date());
+
+                      speak("The time is " + time);
+                  }
+
+                  else if (text.contains("settings") ||
+                           text.contains("सेटिंग")) {
+
+                      speak("Opening settings.");
+
+                      Intent settings = new Intent(
+                          android.provider.Settings.ACTION_SETTINGS
                       );
+                      settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                      try {
+                          startActivity(settings);
+                      } catch (Exception ignored) {
+                      }
+                  }
+
+                  else if (text.contains("hello") ||
+                           text.contains("hi") ||
+                           text.contains("नमस्ते") ||
+                           text.contains("हेलो")) {
+
+                      speak("Hello. JARVIS is ready.");
+                  }
+
+                  else if (text.contains("stop listening") ||
+                           text.contains("सुनना बंद")) {
+
+                      waitingForCommand = false;
+                      speak("Okay. I am back in wake mode.");
                   }
 
                   else {
-
-                      speak(
-                          "I heard you. Command received."
-                      );
+                      speak("I heard you. Command received.");
                   }
+
+                  handler.postDelayed(this::startWakeListening, 900);
               }
 
               private void speak(String message) {
-
                   if (tts != null) {
-
                       tts.speak(
                           message,
                           TextToSpeech.QUEUE_FLUSH,
@@ -480,12 +610,45 @@ jobs:
                   }
               }
 
-              @Override
-              protected void onDestroy() {
+              private void stopJarvisService() {
+                  stopping = true;
+                  listening = false;
+                  waitingForCommand = false;
 
-                  if (speechRecognizer != null) {
-                      speechRecognizer.destroy();
-                      speechRecognizer = null;
+                  if (recognizer != null) {
+                      try {
+                          recognizer.cancel();
+                      } catch (Exception ignored) {
+                      }
+                  }
+
+                  stopForeground(STOP_FOREGROUND_REMOVE);
+                  stopSelf();
+              }
+
+              @Override
+              public int onStartCommand(
+                      Intent intent,
+                      int flags,
+                      int startId) {
+                  return START_NOT_STICKY;
+              }
+
+              @Override
+              public void onDestroy() {
+                  stopping = true;
+
+                  if (handler != null) {
+                      handler.removeCallbacksAndMessages(null);
+                  }
+
+                  if (recognizer != null) {
+                      try {
+                          recognizer.cancel();
+                          recognizer.destroy();
+                      } catch (Exception ignored) {
+                      }
+                      recognizer = null;
                   }
 
                   if (tts != null) {
@@ -495,6 +658,11 @@ jobs:
                   }
 
                   super.onDestroy();
+              }
+
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return null;
               }
           }
           EOF
@@ -512,5 +680,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-Offline-APK
+          name: JARVIS-Wake-Background-APK
           path: app/build/outputs/apk/debug/app-debug.apk
