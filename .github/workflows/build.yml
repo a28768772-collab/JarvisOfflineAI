@@ -1,165 +1,65 @@
-package com.jarvis.offline;
+name: Build JARVIS APK
 
-import android.Manifest;
-import android.app.Activity;
-import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.os.Build;
-import android.os.Bundle;
-import android.provider.Settings;
-import android.widget.Button;
-import android.widget.LinearLayout;
-import android.widget.TextView;
-import android.view.Gravity;
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
 
-public class MainActivity extends Activity {
+jobs:
+  build:
+    runs-on: ubuntu-24.04
 
-    private static final int REQ_AUDIO = 100;
-    private static final int REQ_NOTIFICATIONS = 101;
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    private TextView status;
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        buildScreen();
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-        if (Build.VERSION.SDK_INT >= 23 &&
-            checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-            requestPermissions(
-                new String[]{Manifest.permission.RECORD_AUDIO},
-                REQ_AUDIO
-            );
-        }
-    }
+      - name: Install Gradle 8.11.1
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
+          unzip -q gradle-8.11.1-bin.zip
+          echo "$PWD/gradle-8.11.1/bin" >> "$GITHUB_PATH"
 
-    private void buildScreen() {
+      - name: Check project files
+        run: |
+          echo "Repository files:"
+          find . -maxdepth 3 -type f | sort | head -200
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setGravity(Gravity.CENTER);
-        root.setPadding(40, 60, 40, 40);
+      - name: Make gradlew executable
+        if: ${{ hashFiles('gradlew') != '' }}
+        run: chmod +x gradlew
 
-        TextView title = new TextView(this);
-        title.setText("J A R V I S");
-        title.setTextSize(34);
-        title.setGravity(Gravity.CENTER);
+      - name: Build JARVIS APK with Gradle wrapper
+        if: ${{ hashFiles('gradlew') != '' }}
+        run: ./gradlew assembleDebug --stacktrace
 
-        status = new TextView(this);
-        status.setText(
-            "\nJARVIS Ready\n\n" +
-            "Tap START once.\n" +
-            "Then say: Hey JARVIS"
-        );
-        status.setTextSize(19);
-        status.setGravity(Gravity.CENTER);
+      - name: Build JARVIS APK with installed Gradle
+        if: ${{ hashFiles('gradlew') == '' && hashFiles('settings.gradle', 'settings.gradle.kts', 'build.gradle', 'build.gradle.kts') != '' }}
+        run: gradle assembleDebug --stacktrace
 
-        Button start = new Button(this);
-        start.setText("START JARVIS");
+      - name: Find APK
+        run: |
+          echo "Searching for APK files..."
+          find . -type f -name "*.apk" -print
 
-        Button control = new Button(this);
-        control.setText("ENABLE PHONE CONTROL");
-
-        Button stop = new Button(this);
-        stop.setText("STOP");
-
-        start.setOnClickListener(v -> startJarvis());
-
-        control.setOnClickListener(v -> openAccessibilitySettings());
-
-        stop.setOnClickListener(v -> stopJarvis());
-
-        root.addView(title);
-        root.addView(status);
-        root.addView(start);
-        root.addView(control);
-        root.addView(stop);
-
-        setContentView(root);
-    }
-
-    private void openAccessibilitySettings() {
-        try {
-            startActivity(
-                new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            );
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void startJarvis() {
-
-        if (Build.VERSION.SDK_INT >= 23 &&
-            checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-
-            requestPermissions(
-                new String[]{Manifest.permission.RECORD_AUDIO},
-                REQ_AUDIO
-            );
-            return;
-        }
-
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-
-            requestPermissions(
-                new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                REQ_NOTIFICATIONS
-            );
-        }
-
-        Intent serviceIntent =
-            new Intent(this, JarvisService.class);
-
-        if (Build.VERSION.SDK_INT >= 26) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
-        }
-
-        status.setText(
-            "\nJARVIS ACTIVE\n\n" +
-            "Background wake is ON\n" +
-            "Say: Hey JARVIS"
-        );
-    }
-
-    private void stopJarvis() {
-
-        stopService(
-            new Intent(this, JarvisService.class)
-        );
-
-        status.setText(
-            "\nJARVIS STOPPED\n\n" +
-            "Tap START to run again."
-        );
-    }
-
-    @Override
-    public void onRequestPermissionsResult(
-            int requestCode,
-            String[] permissions,
-            int[] grantResults) {
-
-        super.onRequestPermissionsResult(
-            requestCode,
-            permissions,
-            grantResults
-        );
-
-        if (requestCode == REQ_AUDIO &&
-            grantResults.length > 0 &&
-            grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-
-            status.setText(
-                "\nMicrophone allowed.\n\n" +
-                "Tap START JARVIS once."
-            );
-        }
-    }
-}
+      - name: Upload JARVIS APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-APK
+          path: |
+            **/build/outputs/apk/**/*.apk
+            **/build/outputs/apk/*.apk
+          if-no-files-found: error
