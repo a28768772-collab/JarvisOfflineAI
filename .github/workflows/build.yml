@@ -34,6 +34,7 @@ jobs:
         run: |
           mkdir -p app/src/main/java/com/jarvis/offline
           mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/xml
 
           cat > settings.gradle <<'EOF'
           pluginManagement {
@@ -86,6 +87,23 @@ jobs:
           }
           EOF
 
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources>
+              <string name="app_name">JARVIS</string>
+              <string name="accessibility_description">JARVIS phone command control</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/xml/accessibility_service_config.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:notificationTimeout="100"
+              android:canRetrieveWindowContent="false"
+              android:description="@string/accessibility_description" />
+          EOF
+
           cat > app/src/main/res/values/styles.xml <<'EOF'
           <resources>
               <style name="AppTheme"
@@ -136,8 +154,47 @@ jobs:
                       android:stopWithTask="false"
                       android:foregroundServiceType="microphone" />
 
+                  <service
+                      android:name=".JarvisAccessibilityService"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                      android:exported="false">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+
               </application>
           </manifest>
+          EOF
+
+          cat > app/src/main/java/com/jarvis/offline/JarvisAccessibilityService.java <<'EOF'
+          package com.jarvis.offline;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.view.accessibility.AccessibilityEvent;
+
+          public class JarvisAccessibilityService extends AccessibilityService {
+              private static JarvisAccessibilityService instance;
+
+              public static JarvisAccessibilityService getInstance() { return instance; }
+
+              @Override public void onServiceConnected() { super.onServiceConnected(); instance = this; }
+              @Override public void onAccessibilityEvent(AccessibilityEvent event) {}
+              @Override public void onInterrupt() {}
+              @Override public void onDestroy() { if (instance == this) instance = null; super.onDestroy(); }
+
+              public boolean back() { return performGlobalAction(GLOBAL_ACTION_BACK); }
+              public boolean home() { return performGlobalAction(GLOBAL_ACTION_HOME); }
+              public boolean recents() { return performGlobalAction(GLOBAL_ACTION_RECENTS); }
+              public boolean notifications() { return performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS); }
+              public boolean quickSettings() { return performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS); }
+              public boolean lock() {
+                  return android.os.Build.VERSION.SDK_INT >= 28 && performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN);
+              }
+          }
           EOF
 
           cat > app/src/main/java/com/jarvis/offline/MainActivity.java <<'EOF'
@@ -149,6 +206,7 @@ jobs:
           import android.content.pm.PackageManager;
           import android.os.Build;
           import android.os.Bundle;
+          import android.provider.Settings;
           import android.widget.Button;
           import android.widget.LinearLayout;
           import android.widget.TextView;
@@ -204,9 +262,14 @@ jobs:
                   root.addView(title);
                   root.addView(status);
                   root.addView(start);
+                  root.addView(control);
                   root.addView(stop);
 
                   setContentView(root);
+              }
+
+              private void openAccessibilitySettings() {
+                  try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); } catch (Exception ignored) {}
               }
 
               private void startJarvis() {
@@ -502,12 +565,8 @@ jobs:
               }
 
               private void handleSpeech(String raw) {
-                  String text = raw.toLowerCase(Locale.ROOT).trim();
-
-                  if (text.isEmpty()) {
-                      restartListeningSoon();
-                      return;
-                  }
+                  String text = normalize(raw);
+                  if (text.isEmpty()) { restartListeningSoon(); return; }
 
                   if (containsStopCommand(text)) {
                       speak("JARVIS stopping.");
@@ -517,12 +576,15 @@ jobs:
 
                   if (!waitingForCommand) {
                       if (containsWakeWord(text)) {
-                          waitingForCommand = true;
-                          speak("Yes?");
-                          handler.postDelayed(this::startWakeListening, 700);
-                      } else {
-                          restartListeningSoon();
-                      }
+                          String command = removeWakeWord(text).trim();
+                          if (!command.isEmpty()) {
+                              executeCommand(command);
+                          } else {
+                              waitingForCommand = true;
+                              speak("Yes?");
+                              handler.postDelayed(this::startWakeListening, 900);
+                          }
+                      } else restartListeningSoon();
                       return;
                   }
 
@@ -530,10 +592,20 @@ jobs:
                   executeCommand(text);
               }
 
+              private String normalize(String text) {
+                  return text.toLowerCase(Locale.ROOT)
+                      .replace("hey jarvis", "jarvis")
+                      .replace("ok jarvis", "jarvis")
+                      .replace("okay jarvis", "jarvis")
+                      .trim();
+              }
+
+              private String removeWakeWord(String text) {
+                  return text.replaceFirst("^(jarvis|जार्विस|जर्विस)[ ,:;.!-]*", "");
+              }
+
               private boolean containsWakeWord(String text) {
-                  return text.contains("jarvis") ||
-                         text.contains("जार्विस") ||
-                         text.contains("जर्विस");
+                  return text.startsWith("jarvis") || text.startsWith("जार्विस") || text.startsWith("जर्विस");
               }
 
               private boolean containsStopCommand(String text) {
@@ -547,56 +619,56 @@ jobs:
                           text.contains("shutdown"));
               }
 
+              private JarvisAccessibilityService control() {
+                  return JarvisAccessibilityService.getInstance();
+              }
+
+              private boolean action(java.util.function.Supplier<Boolean> fn, String ok, String fail) {
+                  JarvisAccessibilityService a = control();
+                  if (a != null && fn.get()) { speak(ok); }
+                  else { speak(fail); }
+                  restartAfterReply();
+                  return a != null;
+              }
+
               private void executeCommand(String text) {
-
-                  if (text.contains("time") ||
-                      text.contains("समय") ||
-                      text.contains("टाइम")) {
-
-                      String time = new SimpleDateFormat(
-                          "hh:mm a",
-                          Locale.getDefault()
-                      ).format(new Date());
-
-                      speak("The time is " + time);
-                  }
-
-                  else if (text.contains("settings") ||
-                           text.contains("सेटिंग")) {
-
+                  if (text.contains("back") || text.contains("पीछे") || text.contains("बैक") || text.contains("वापस") || text.contains("back karo") || text.contains("screen back")) {
+                      action(() -> control().back(), "Going back.", "Phone control is OFF. Open JARVIS and enable Phone Control.");
+                  } else if (text.contains("home") || text.contains("होम") || text.contains("home karo") || text.contains("घर")) {
+                      action(() -> control().home(), "Going home.", "Phone control is OFF. Open JARVIS and enable Phone Control.");
+                  } else if (text.contains("recent") || text.contains("recents") || text.contains("recent apps") || text.contains("रीसेंट") || text.contains("हाल के ऐप") || text.contains("पिछले ऐप")) {
+                      action(() -> control().recents(), "Opening recent apps.", "Phone control is OFF. Open JARVIS and enable Phone Control.");
+                  } else if (text.contains("notification") || text.contains("नोटिफिकेशन")) {
+                      action(() -> control().notifications(), "Opening notifications.", "Phone control is OFF. Open JARVIS and enable Phone Control.");
+                  } else if (text.contains("quick settings") || text.contains("quick panel") || text.contains("क्विक सेटिंग")) {
+                      action(() -> control().quickSettings(), "Opening quick settings.", "Phone control is OFF. Open JARVIS and enable Phone Control.");
+                  } else if (text.contains("lock screen") || text.contains("lock phone") || text.contains("phone lock") || text.contains("फोन लॉक") || text.contains("स्क्रीन लॉक") || text.contains("lock karo")) {
+                      action(() -> control().lock(), "Locking the screen.", "Phone lock is not available right now.");
+                  } else if (text.contains("settings") || text.contains("सेटिंग")) {
                       speak("Opening settings.");
-
-                      Intent settings = new Intent(
-                          android.provider.Settings.ACTION_SETTINGS
-                      );
-                      settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-                      try {
-                          startActivity(settings);
-                      } catch (Exception ignored) {
-                      }
-                  }
-
-                  else if (text.contains("hello") ||
-                           text.contains("hi") ||
-                           text.contains("नमस्ते") ||
-                           text.contains("हेलो")) {
-
+                      Intent i = new Intent(android.provider.Settings.ACTION_SETTINGS);
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      try { startActivity(i); } catch (Exception ignored) {}
+                      restartAfterReply();
+                  } else if (text.contains("time") || text.contains("समय") || text.contains("टाइम")) {
+                      String time = new SimpleDateFormat("hh:mm a", Locale.getDefault()).format(new Date());
+                      speak("The time is " + time);
+                      restartAfterReply();
+                  } else if (text.contains("hello") || text.contains("hi") || text.contains("नमस्ते") || text.contains("हेलो")) {
                       speak("Hello. JARVIS is ready.");
-                  }
-
-                  else if (text.contains("stop listening") ||
-                           text.contains("सुनना बंद")) {
-
+                      restartAfterReply();
+                  } else if (text.contains("stop listening") || text.contains("सुनना बंद")) {
                       waitingForCommand = false;
-                      speak("Okay. I am back in wake mode.");
+                      speak("Okay. Wake mode is still active.");
+                      restartAfterReply();
+                  } else {
+                      speak("I don't have that phone command yet.");
+                      restartAfterReply();
                   }
+              }
 
-                  else {
-                      speak("I heard you. Command received.");
-                  }
-
-                  handler.postDelayed(this::startWakeListening, 900);
+              private void restartAfterReply() {
+                  handler.postDelayed(this::startWakeListening, 1200);
               }
 
               private void speak(String message) {
